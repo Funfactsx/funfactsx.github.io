@@ -1,0 +1,80 @@
+name: Export Fun Facts and publish static GitHub Pages
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "requirements.txt"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "preview protects against duplicate indexing; production is indexable"
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - production
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: funfacts-pages
+  cancel-in-progress: false
+
+jobs:
+  export:
+    name: Export all public facts then deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Export published HTML from original site
+        env:
+          MODE: ${{ inputs.mode || 'preview' }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "production" ]; then
+            python scripts/export.py --production --workers 4
+          else
+            python scripts/export.py --workers 4
+          fi
+      - name: Verify completeness and SEO files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('site')
+          stats=json.loads((p/'build-report.json').read_text())
+          assert stats['articles']>=3000, stats
+          assert len(list(p.glob('*-xfunfacts-*.html'))) == stats['articles']
+          assert (p/'index.html').exists()
+          assert (p/'css/style.css').exists()
+          assert (p/'facts.json').exists()
+          assert (p/'sitemap.xml').exists()
+          assert (p/'robots.txt').exists()
+          print("Verified", stats['articles'], "fact documents")
+          PY
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Upload static HTML artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
